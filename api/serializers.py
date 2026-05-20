@@ -393,4 +393,24 @@ class CertificadoExtracaoSerializer(serializers.Serializer):
         extensao = value.name.split(".")[-1].lower()
         if extensao not in extensoes_permitidas:
             raise serializers.ValidationError("Envie um arquivo PDF ou imagem PNG/JPG/JPEG.")
+
+        tipos_permitidos = [
+            "application/pdf",
+            "image/png",
+            "image/jpeg"
+        ]
+
+        if value.content_type not in tipos_permitidos:
+            raise serializers.ValidationError(
+                "Tipo de arquivo inválido."
+            )
+
+        limite_mb = 5
+        tamanho_maximo = limite_mb * 1024 * 1024
+
+        if value.size > tamanho_maximo:
+            raise serializers.ValidationError(
+                f"O arquivo deve ter no máximo {limite_mb}MB."
+            )
+        
         return value
