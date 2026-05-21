@@ -7,6 +7,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError,AuthenticationFailed
 from django.db import (connection, IntegrityError, DatabaseError,
                         InternalError, transaction)
+from django.db.models import Q, Count
 from django.http import FileResponse
 
 
@@ -43,6 +44,8 @@ from api.redefinir_service import RedefinirSenhaService
 from api.utils_auditoria import set_audit_context
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
+from api.pagination import (AlunoPagination, SubmissaoPagination,
+                            AuditoriaPagination)
 
 class UsuarioViewSet(viewsets.ReadOnlyModelViewSet):
     """Listando usuários, sem permitir criação, deleteção e etc, esses metodos
@@ -499,33 +502,50 @@ class InscricaoViewSet(AuditContextMixin, viewsets.ModelViewSet):
 
 class AlunoViewSet(AuditContextMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
+    pagination_class = AlunoPagination
     def get_queryset(self):
         usuario = self.request.user
 
         base_qs = Aluno.objects.select_related('usuario').prefetch_related(
             'inscricoes__curso',
             'inscricoes__status_matricula'
-        )
+        ).order_by("usuario__nome", "pk")
 
         # superadmin
 
         if hasattr(usuario, 'superadmin'):
-            return base_qs
-        
-        # coordenador
+            queryset = base_qs
 
-        if hasattr(usuario, 'coordenador'):
-            return base_qs.filter(
+        elif hasattr(usuario, 'coordenador'):
+            queryset = base_qs.filter(
                 inscricoes__curso__coordenacaocurso__coordenador=usuario.coordenador,
                 inscricoes__curso__coordenacaocurso__data_fim__isnull=True
-            ).distinct()
+            )
 
-        # aluno
+        elif hasattr(usuario, 'aluno'):
+            queryset = base_qs.filter(pk=usuario.aluno.pk)
 
-        if hasattr(usuario, 'aluno'):
-            return base_qs.filter(pk= usuario.aluno.pk)
+        else:
+            return Aluno.objects.none()
+        
+        busca = self.request.query_params.get("busca")
+        status_matricula = self.request.query_params.get("status")
 
-        return Aluno.objects.none()
+        if busca:
+            queryset = queryset.filter(
+                Q(usuario__nome__unaccent__icontains=busca) |
+                Q(matricula__icontains=busca) |
+                Q(inscricoes__curso__nome__unaccent__icontains=busca)
+            )
+
+        if status_matricula:
+            queryset = queryset.filter(
+                inscricoes__status_matricula__nome__unaccent__iexact=status_matricula
+            )
+
+        return queryset.distinct()
+        
+
     
     def get_serializer_class(self):
         if self.action == 'create':
@@ -1108,33 +1128,62 @@ class CursoViewSet(AuditContextMixin, viewsets.ModelViewSet):
 class SubmissaoViewSet(AuditContextMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
+    pagination_class = SubmissaoPagination
+    
     def get_queryset(self):
         usuario = self.request.user
 
-        queryset = Submissao.objects.select_related(
+        base_qs = Submissao.objects.select_related(
             'aluno',
             'aluno__usuario',
             'curso',
             'atividade_complementar',
+            'atividade_complementar__tipo_atividade',
             'status_submissao',
             'certificado',
             'coordenador',
             'coordenador__usuario'
-        )
+        ).order_by('-data_envio', '-id_submissao')
 
         if hasattr(usuario, 'aluno'):
-            return queryset.filter(aluno=usuario.aluno)
+            queryset = base_qs.filter(aluno=usuario.aluno)
 
-        if hasattr(usuario, 'coordenador'):
-            return queryset.filter(
+        elif hasattr(usuario, 'coordenador'):
+            queryset = base_qs.filter(
                 curso__coordenacaocurso__coordenador=usuario.coordenador,
                 curso__coordenacaocurso__data_fim__isnull=True
-            ).distinct()
+            )
 
-        if hasattr(usuario, 'superadmin'):
-            return queryset
+        elif hasattr(usuario, 'superadmin'):
+            queryset = base_qs
 
-        return queryset.none()
+        else:
+            return Submissao.objects.none()
+
+        busca = self.request.query_params.get("busca")
+        curso = self.request.query_params.get("curso")
+        status_submissao = self.request.query_params.get("status")
+        categoria = self.request.query_params.get("categoria")
+
+        if busca:
+            queryset = queryset.filter(
+                Q(aluno__usuario__nome__unaccent__icontains=busca) |
+                Q(curso__nome__unaccent__icontains=busca) |
+                Q(atividade_complementar__tipo_atividade__nome__unaccent__icontains=busca)
+            )
+
+        if curso:
+            queryset = queryset.filter(curso__nome__unaccent__iexact=curso)
+
+        if status_submissao:
+            queryset = queryset.filter(status_submissao__nome_status__unaccent__iexact=status_submissao)
+
+        if categoria:
+            queryset = queryset.filter(
+                atividade_complementar__tipo_atividade__nome__unaccent__iexact=categoria
+            )
+
+        return queryset.distinct()
     
     serializer_class = SubmissaoReadSerializer
     
@@ -1145,6 +1194,115 @@ class SubmissaoViewSet(AuditContextMixin, viewsets.ModelViewSet):
             return SubmissaoUpdateSerializer
         return SubmissaoReadSerializer
     
+    @action(detail=False, methods=['get'], url_path='resumo-dashboard')
+    def resumo_dashboard(self, request):
+        usuario = request.user
+
+        queryset = Submissao.objects.select_related(
+            'aluno',
+            'aluno__usuario',
+            'curso',
+            'atividade_complementar',
+            'atividade_complementar__tipo_atividade',
+            'status_submissao',
+            'certificado',
+            'coordenador',
+            'coordenador__usuario'
+        ).order_by('-data_envio', '-id_submissao')
+
+        if hasattr(usuario, 'aluno'):
+            queryset = queryset.filter(aluno=usuario.aluno)
+
+        elif hasattr(usuario, 'coordenador'):
+            queryset = queryset.filter(
+                curso__coordenacaocurso__coordenador=usuario.coordenador,
+                curso__coordenacaocurso__data_fim__isnull=True
+            )
+
+        elif hasattr(usuario, 'superadmin'):
+            pass
+
+        else:
+            return Response({
+                'total': 0,
+                'por_status': {},
+                'por_curso': [],
+                'cursos': [],
+                'ultimas': []
+            })
+
+        queryset_permitido = queryset.distinct()
+
+        curso_id = request.query_params.get('curso')
+        status_nome = request.query_params.get('status')
+
+        if curso_id:
+            queryset = queryset.filter(curso_id=curso_id)
+
+        if status_nome:
+            queryset = queryset.filter(
+                status_submissao__nome_status__unaccent__iexact=status_nome
+            )
+
+        queryset = queryset.distinct()
+
+        total = queryset.count()
+
+        contagem_status = queryset.values(
+            'status_submissao__nome_status'
+        ).annotate(
+            total=Count('id_submissao')
+        ).order_by('status_submissao__nome_status')
+
+        por_status = {
+            item['status_submissao__nome_status']: item['total']
+            for item in contagem_status
+        }
+
+        contagem_cursos = queryset.values(
+            'curso',
+            'curso__nome'
+        ).annotate(
+            total=Count('id_submissao')
+        ).order_by('curso__nome')
+
+        por_curso = [
+            {
+                'id': item['curso'],
+                'nome': item['curso__nome'],
+                'total': item['total']
+            }
+            for item in contagem_cursos
+        ]
+
+        cursos_disponiveis = queryset_permitido.values(
+            'curso',
+            'curso__nome'
+        ).distinct().order_by('curso__nome')
+
+        cursos = [
+            {
+                'id': item['curso'],
+                'nome': item['curso__nome']
+            }
+            for item in cursos_disponiveis
+        ]
+
+        ultimas = queryset[:8]
+        ultimas_serializadas = SubmissaoReadSerializer(
+            ultimas,
+            many=True,
+            context={'request': request}
+        ).data
+
+        return Response({
+            'total': total,
+            'por_status': por_status,
+            'por_curso': por_curso,
+            'cursos': cursos,
+            'ultimas': ultimas_serializadas
+        })
+
     @swagger_auto_schema(
         operation_summary="Criar submissão",
         operation_description="""
@@ -1362,6 +1520,7 @@ class SubmissaoViewSet(AuditContextMixin, viewsets.ModelViewSet):
 class LogAuditoriaViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = LogAuditoriaReadSerializer
+    pagination_class = AuditoriaPagination
     
     def _validar_superadmin(self, request):
         usuario = request.user
@@ -1371,10 +1530,24 @@ class LogAuditoriaViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         self._validar_superadmin(self.request)
 
-        return LogAuditoria.objects.select_related(
+        queryset = LogAuditoria.objects.select_related(
             'usuario',
             'tipo_acao'
-        ).order_by('-data_hora')
+        ).order_by('-data_hora', '-id_log_auditoria')
+
+        busca = self.request.query_params.get("busca")
+
+        if busca:
+            queryset = queryset.filter(
+                Q(usuario__nome__unaccent__icontains=busca) |
+                Q(usuario__email__unaccent__icontains=busca) |
+                Q(tipo_acao__acao__unaccent__icontains=busca) |
+                Q(nome_entidade__unaccent__icontains=busca) |
+                Q(descricao__unaccent__icontains=busca) |
+                Q(ip_origem__icontains=busca)
+            )
+
+        return queryset
     
     @swagger_auto_schema(
         operation_summary="Listar logs de auditoria",
