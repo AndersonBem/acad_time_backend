@@ -7,7 +7,8 @@ from api.views import (
     CoordenadorCursoViewSet, TipoAtividadeViewSet, RegraAtividadeViewSet,
     StatusSubmissaoViewSet,AtividadeComplementarViewSet,SubmissaoViewSet, CursoViewSet,
     LogAuditoriaViewSet,NotificacaoEmailViewSet, RecuperarSenhaAPIView,
-    RedefinirSenhaAPIView,ExtrairDadosCertificadoView,ExtrairDadosCertificadoViewMock)
+    RedefinirSenhaAPIView,ExtrairDadosCertificadoView,ExtrairDadosCertificadoViewMock,
+    MobileNotificacoesAPIView, MobileDashboardAPIView)
 
 router = routers.DefaultRouter()
 router.register('usuarios', UsuarioViewSet, basename='usuarios')
@@ -24,10 +25,13 @@ router.register('submissao',SubmissaoViewSet, basename= 'submissao')
 router.register('curso', CursoViewSet, basename= 'curso')
 router.register('auditoria', LogAuditoriaViewSet, basename='auditoria')
 router.register('notificacaoEmail', NotificacaoEmailViewSet, basename='notificacaoEmail')
+
 urlpatterns = [
     path('login/', LoginAPIView.as_view(), name='login'),
     path('redefinir-senha/', RedefinirSenhaAPIView.as_view(), name='redefinir-senha'),
     path('recuperar-senha/', RecuperarSenhaAPIView.as_view(), name='recuperar-senha'),
+    path('mobile/notificacoes/', MobileNotificacoesAPIView.as_view(), name='mobile-notificacoes'),
+    path('mobile/dashboard/', MobileDashboardAPIView.as_view(), name='mobile-dashboard'),
 
     # produção (Render)
     path('ocr/', ExtrairDadosCertificadoViewMock.as_view()),
