@@ -1828,3 +1828,204 @@ class ExtrairDadosCertificadoViewMock(APIView):
                 "texto_extraido": "Texto mockado para demonstração."
             }
         })
+
+class MobileNotificacoesAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        usuario = request.user
+
+        if not hasattr(usuario, 'aluno'):
+            raise PermissionDenied('Apenas alunos podem acessar notificações mobile.')
+
+        submissoes = Submissao.objects.select_related(
+            'curso',
+            'atividade_complementar',
+            'atividade_complementar__tipo_atividade',
+            'status_submissao',
+            'certificado'
+        ).filter(
+            aluno=usuario.aluno
+        ).order_by('-data_envio', '-id_submissao')[:50]
+
+        hoje = timezone.now().date()
+
+        status_map = {
+            'APROVADA': 'Aprovado',
+            'REPROVADA': 'Rejeitado',
+            'PENDENTE': 'Pendente',
+        }
+
+        notificacoes = []
+
+        for submissao in submissoes:
+            status_nome = submissao.status_submissao.nome_status
+            status_label = status_map.get(status_nome, status_nome.title())
+
+            dias = (hoje - submissao.data_envio).days
+
+            if dias <= 0:
+                tempo_relativo = 'Hoje'
+            elif dias == 1:
+                tempo_relativo = 'Há 1d'
+            else:
+                tempo_relativo = f'Há {dias}d'
+
+            categoria = submissao.atividade_complementar.tipo_atividade.nome
+            descricao = submissao.atividade_complementar.descricao
+
+            notificacoes.append({
+                'id': f'submissao-{submissao.id_submissao}-{status_nome}',
+                'submissao_id': submissao.id_submissao,
+                'titulo': descricao or categoria,
+                'subtitulo': f'Enviado em {submissao.data_envio.strftime("%d/%m/%Y")}',
+                'curso': submissao.curso.nome,
+                'categoria': categoria,
+                'status': status_label,
+                'status_original': status_nome,
+                'tempo_relativo': tempo_relativo,
+                'data_envio': submissao.data_envio,
+                'lida': False,
+                'certificado_nome': submissao.certificado.nome_arquivo if submissao.certificado else None,
+            })
+
+        return Response({
+            'count': len(notificacoes),
+            'results': notificacoes
+        }, status=status.HTTP_200_OK)
+    
+class MobileDashboardAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        usuario = request.user
+
+        if not hasattr(usuario, 'aluno'):
+            raise PermissionDenied('Apenas alunos podem acessar o dashboard mobile.')
+
+        aluno = usuario.aluno
+        curso_id = request.query_params.get('curso')
+
+        inscricoes = Inscricao.objects.select_related(
+            'curso',
+            'status_matricula'
+        ).filter(aluno=aluno)
+
+        if curso_id:
+            inscricao_atual = inscricoes.filter(curso_id=curso_id).first()
+
+            if not inscricao_atual:
+                raise PermissionDenied('Este curso não pertence ao aluno logado.')
+        else:
+            inscricao_atual = (
+                inscricoes.filter(status_matricula_id=1).first()
+                or inscricoes.first()
+            )
+
+        curso_atual = inscricao_atual.curso if inscricao_atual else None
+
+        submissoes = Submissao.objects.select_related(
+            'curso',
+            'atividade_complementar',
+            'atividade_complementar__tipo_atividade',
+            'status_submissao',
+            'certificado',
+            'coordenador',
+            'coordenador__usuario'
+        ).filter(aluno=aluno)
+
+        if curso_atual:
+            submissoes = submissoes.filter(curso=curso_atual)
+
+        submissoes = submissoes.order_by('-data_envio', '-id_submissao')
+
+        horas_aprovadas = 0
+        horas_pendentes = 0
+        horas_rejeitadas = 0
+
+        for submissao in submissoes:
+            status_nome = submissao.status_submissao.nome_status
+            horas_solicitadas = submissao.atividade_complementar.carga_horaria_solicitada or 0
+
+            if status_nome == 'APROVADA':
+                horas_aprovadas += submissao.carga_horaria_aprovada or 0
+            elif status_nome == 'PENDENTE':
+                horas_pendentes += horas_solicitadas
+            elif status_nome == 'REPROVADA':
+                horas_rejeitadas += horas_solicitadas
+
+        progresso_por_tipo = []
+
+        if curso_atual:
+            regras = RegraAtividade.objects.select_related(
+                'tipo_atividade'
+            ).filter(curso=curso_atual).order_by('tipo_atividade__nome')
+
+            for regra in regras:
+                aprovadas_tipo = 0
+
+                for submissao in submissoes:
+                    mesmo_tipo = (
+                        submissao.atividade_complementar.tipo_atividade_id
+                        == regra.tipo_atividade_id
+                    )
+                    aprovada = submissao.status_submissao.nome_status == 'APROVADA'
+
+                    if mesmo_tipo and aprovada:
+                        aprovadas_tipo += submissao.carga_horaria_aprovada or 0
+
+                limite = regra.limite_horas or 0
+                percentual = round((aprovadas_tipo / limite) * 100) if limite else 0
+
+                progresso_por_tipo.append({
+                    'tipo_atividade': regra.tipo_atividade_id,
+                    'tipo_atividade_nome': regra.tipo_atividade.nome,
+                    'horas_aprovadas': aprovadas_tipo,
+                    'limite_horas': limite,
+                    'percentual': min(percentual, 100),
+                    'exige_comprovante': regra.exige_comprovante,
+                })
+
+        ultimas = SubmissaoReadSerializer(
+            submissoes[:5],
+            many=True,
+            context={'request': request}
+        ).data
+
+        cursos = [
+            {
+                'id': inscricao.curso.id_curso,
+                'nome': inscricao.curso.nome,
+                'status_matricula': inscricao.status_matricula.nome,
+                'data_inscricao': inscricao.data_inscricao,
+            }
+            for inscricao in inscricoes
+        ]
+
+        return Response({
+            'aluno': {
+                'id': aluno.usuario.id_usuario,
+                'nome': aluno.usuario.nome,
+                'email': aluno.usuario.email,
+                'matricula': aluno.matricula,
+                'total_horas': aluno.total_horas,
+            },
+            'curso_atual': {
+                'id': curso_atual.id_curso,
+                'nome': curso_atual.nome,
+                'carga_horaria_minima': curso_atual.carga_horaria_minima,
+            } if curso_atual else None,
+            'cursos': cursos,
+            'resumo': {
+                'horas_aprovadas': horas_aprovadas,
+                'horas_pendentes': horas_pendentes,
+                'horas_rejeitadas': horas_rejeitadas,
+                'total_submissoes': submissoes.count(),
+                'meta_horas': curso_atual.carga_horaria_minima if curso_atual else 0,
+                'percentual_geral': round(
+                    (horas_aprovadas / curso_atual.carga_horaria_minima) * 100
+                ) if curso_atual and curso_atual.carga_horaria_minima else 0,
+            },
+            'progresso_por_tipo': progresso_por_tipo,
+            'ultimas_submissoes': ultimas,
+        }, status=status.HTTP_200_OK)
