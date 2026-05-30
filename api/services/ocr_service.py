@@ -1,8 +1,8 @@
 import re
 import pdfplumber
-import easyocr
 import numpy as np
 from PIL import Image
+from paddleocr import PaddleOCR
 
 
 class CertificadoExtracaoService:
@@ -11,7 +11,10 @@ class CertificadoExtracaoService:
     @classmethod
     def get_reader(cls):
         if cls.reader is None:
-            cls.reader = easyocr.Reader(['pt'], gpu=False)
+            cls.reader = PaddleOCR(
+                use_angle_cls=True,
+                lang="pt"
+            )
         return cls.reader
 
     @staticmethod
@@ -34,10 +37,10 @@ class CertificadoExtracaoService:
             for pagina in pdf.pages:
                 conteudo = pagina.extract_text()
 
-                if conteudo:
+                if conteudo and conteudo.strip():
                     texto += conteudo + "\n"
                 else:
-                    imagem = pagina.to_image(resolution=300).original
+                    imagem = pagina.to_image(resolution=200).original
                     texto_ocr = CertificadoExtracaoService.extrair_texto_imagem_pil(imagem)
                     texto += texto_ocr + "\n"
 
@@ -53,9 +56,16 @@ class CertificadoExtracaoService:
         reader = CertificadoExtracaoService.get_reader()
 
         imagem_np = np.array(imagem)
-        resultado = reader.readtext(imagem_np)
 
-        textos = [item[1] for item in resultado]
+        resultado = reader.ocr(imagem_np, cls=True)
+
+        textos = []
+
+        if resultado and resultado[0]:
+            for linha in resultado[0]:
+                texto = linha[1][0]
+                textos.append(texto)
+
         return " ".join(textos)
 
     @staticmethod
@@ -64,32 +74,36 @@ class CertificadoExtracaoService:
             "texto_extraido": texto or ""
         }
 
-        # carga horária
-        match_carga = re.search(r'(\d+)\s*(horas|hora|h)\b', texto, re.IGNORECASE)
+        match_carga = re.search(
+            r'(\d+)\s*(horas|hora|h)\b',
+            texto,
+            re.IGNORECASE
+        )
+
         if match_carga:
             dados["carga_horaria"] = match_carga.group(1)
 
-        # data
         match_data = re.search(r'\b\d{2}/\d{2}/\d{4}\b', texto)
+
         if match_data:
             dia, mes, ano = match_data.group().split("/")
             dados["data_certificado"] = f"{ano}-{mes}-{dia}"
 
-        # curso
         match_curso = re.search(
             r'(curso de|curso em|participou do curso de|concluiu o curso de)\s*(.+)',
             texto,
             re.IGNORECASE
         )
+
         if match_curso:
             dados["curso"] = match_curso.group(2).strip()
 
-        # instituição
         match_instituicao = re.search(
             r'(instituição|emitido por|oferecido por)\s*[:\-]?\s*(.+)',
             texto,
             re.IGNORECASE
         )
+
         if match_instituicao:
             dados["instituicao"] = match_instituicao.group(2).strip()
 

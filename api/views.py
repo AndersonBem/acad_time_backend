@@ -1753,7 +1753,7 @@ Formatos aceitos:
         tags=["03 - OCR Certificado"]
     )
     def post(self, request):
-        from .services.ocr_service import CertificadoExtracaoService
+        from .services.ocr_gemini import CertificadoExtracaoService
         
         serializer = CertificadoExtracaoSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
